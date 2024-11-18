@@ -1,4 +1,4 @@
-! Copyright (c) 2023, The Neko Authors
+! Copyright (c) 2023-2024, The Neko Authors
 ! All rights reserved.
 !
 ! Redistribution and use in source and binary forms, with or without
@@ -38,12 +38,13 @@
 module sigma_cpu
   use num_types, only : rp
   use field_list, only : field_list_t
-  use math, only : cadd, NEKO_EPS
   use scratch_registry, only : neko_scratch_registry
   use field_registry, only : neko_field_registry
   use field, only : field_t
   use operators, only : dudxyz
   use coefs, only : coef_t
+  use gs_ops, only : GS_OP_ADD
+  use math, only : NEKO_EPS
   implicit none
   private
 
@@ -82,13 +83,13 @@ contains
     integer :: e, i
 
     ! some constant
-    eps=1.d-14
+    eps = NEKO_EPS
 
 
     ! get fields from registry
     u => neko_field_registry%get_field_by_name("u")
     v => neko_field_registry%get_field_by_name("v")
-    w => neko_field_registry%get_field_by_name("u")
+    w => neko_field_registry%get_field_by_name("w")
 
     call neko_scratch_registry%request_field(g11, temp_indices(1))
     call neko_scratch_registry%request_field(g12, temp_indices(2))
@@ -114,8 +115,30 @@ contains
     call dudxyz (g32%x, w%x, coef%drdy, coef%dsdy, coef%dtdy, coef)
     call dudxyz (g33%x, w%x, coef%drdz, coef%dsdz, coef%dtdz, coef)
 
-    do e=1, coef%msh%nelv
-       do i=1, coef%Xh%lxyz
+    call coef%gs_h%op(g11, GS_OP_ADD)
+    call coef%gs_h%op(g12, GS_OP_ADD)
+    call coef%gs_h%op(g13, GS_OP_ADD)
+    call coef%gs_h%op(g21, GS_OP_ADD)
+    call coef%gs_h%op(g22, GS_OP_ADD)
+    call coef%gs_h%op(g23, GS_OP_ADD)
+    call coef%gs_h%op(g31, GS_OP_ADD)
+    call coef%gs_h%op(g32, GS_OP_ADD)
+    call coef%gs_h%op(g33, GS_OP_ADD)
+
+    do concurrent (i = 1:g11%dof%size())
+       g11%x(i,1,1,1) = g11%x(i,1,1,1) * coef%mult(i,1,1,1)
+       g12%x(i,1,1,1) = g12%x(i,1,1,1) * coef%mult(i,1,1,1)
+       g13%x(i,1,1,1) = g13%x(i,1,1,1) * coef%mult(i,1,1,1)
+       g21%x(i,1,1,1) = g21%x(i,1,1,1) * coef%mult(i,1,1,1)
+       g22%x(i,1,1,1) = g22%x(i,1,1,1) * coef%mult(i,1,1,1)
+       g23%x(i,1,1,1) = g23%x(i,1,1,1) * coef%mult(i,1,1,1)
+       g31%x(i,1,1,1) = g31%x(i,1,1,1) * coef%mult(i,1,1,1)
+       g32%x(i,1,1,1) = g32%x(i,1,1,1) * coef%mult(i,1,1,1)
+       g33%x(i,1,1,1) = g33%x(i,1,1,1) * coef%mult(i,1,1,1)
+    end do
+
+    do concurrent (e = 1:coef%msh%nelv)
+       do concurrent (i = 1:coef%Xh%lxyz)
           ! G_ij = g^t g = g_mi g_mj
           sigG11 = g11%x(i,1,1,e)**2 + g21%x(i,1,1,e)**2 + g31%x(i,1,1,e)**2
           sigG22 = g12%x(i,1,1,e)**2 + g22%x(i,1,1,e)**2 + g32%x(i,1,1,e)**2
@@ -136,26 +159,27 @@ contains
 
           ! eigenvalues with the analytical method of Hasan et al. (2001)
           ! doi:10.1006/jmre.2001.2400
-              if (abs(sigG11).lt.eps) then
+              if (abs(sigG11) .lt. eps) then
                  sigG11 = 0.0_rp
-              endif
-              if (abs(sigG12).lt.eps) then
+              end if
+              if (abs(sigG12) .lt. eps) then
                  sigG12 = 0.0_rp
-              endif
-              if (abs(sigG13).lt.eps) then
+              end if
+              if (abs(sigG13) .lt. eps) then
                  sigG13 = 0.0_rp
-              endif
-              if (abs(sigG22).lt.eps) then
+              end if
+              if (abs(sigG22) .lt. eps) then
                  sigG22 = 0.0_rp
-              endif
-              if (abs(sigG23).lt.eps) then
+              end if
+              if (abs(sigG23) .lt. eps) then
                  sigG23 = 0.0_rp
-              endif
-              if (abs(sigG33).lt.eps) then
+              end if
+              if (abs(sigG33) .lt. eps) then
                  sigG33 = 0.0_rp
-              endif
+              end if
 
-              if (abs(sigG12*sigG12 + sigG13*sigG13 + sigG23*sigG23).lt.eps) then
+              if (abs(sigG12*sigG12 + &
+                      sigG13*sigG13 + sigG23*sigG23) .lt. eps) then
                  !             G is diagonal
                  ! estimate the singular values according to:
                  sigma1 = sqrt(max(max(max(sigG11, sigG22), sigG33), 0.0_rp))
@@ -168,7 +192,8 @@ contains
                  Invariant1 = sigG11 + sigG22 + sigG33
                  Invariant2 = sigG11*sigG22 + sigG11*sigG33 + sigG22*sigG33 - &
                            (sigG12*sigG12 + sigG13*sigG13 + sigG23*sigG23)
-                 Invariant3 = sigG11*sigG22*sigG33 + 2.0_rp*sigG12*sigG13*sigG23 - &
+                 Invariant3 = sigG11*sigG22*sigG33 + &
+                              2.0_rp*sigG12*sigG13*sigG23 - &
                            (sigG11*sigG23*sigG23 + sigG22*sigG13*sigG13 + &
                             sigG33*sigG12*sigG12)
 
@@ -192,16 +217,16 @@ contains
                  ! since acos(alpha2/(alpha1^(3/2)))/3.0_rp only valid for
                  ! alpha2^2 < alpha1^3.0_rp and arccos(x) only valid for -1<=x<=1
                  !  alpha3 is between 0 and pi/3
-                 tmp1 = alpha2/(alpha1**(3.0_rp/2.0_rp))
+                 tmp1 = alpha2/sqrt(alpha1 * alpha1 * alpha1)
 
-                 if (tmp1.le.-1.0_rp) then
+                 if (tmp1 .le. -1.0_rp) then
                     ! alpha3=pi/3 -> cos(alpha3)=0.5
                     ! compute the singular values
                     sigma1 = sqrt(max(Invariant1/3.0_rp + sqrt(alpha1), 0.0_rp))
                     sigma2 = sigma1
                     sigma3 = sqrt(Invariant1/3.0_rp - 2.0_rp*sqrt(alpha1))
 
-                elseif (tmp1.ge.1.0_rp) then
+                elseif (tmp1 .ge. 1.0_rp) then
                     ! alpha3=0.0_rp -> cos(alpha3)=1.0
                     sigma1 = sqrt(max(Invariant1/3.0_rp + 2.0_rp*sqrt(alpha1), &
                                       0.0_rp))
@@ -210,7 +235,7 @@ contains
                 else
                     alpha3 = acos(tmp1)/3.0_rp
 
-                  if (abs(Invariant3).lt.eps) then
+                  if (abs(Invariant3) .lt. eps) then
                      ! In case of Invariant3=0, one or more eigenvalues are equal to zero
                      ! Therefore force sigma3 to 0 and compute sigma1 and sigma2
                      sigma1 = sqrt(max(Invariant1/3.0_rp + &
@@ -222,10 +247,11 @@ contains
                                    2.0_rp*sqrt(alpha1)*cos(alpha3), 0.0_rp))
                      sigma2 = sqrt(Invariant1/3.0_rp - &
                                    2.0_rp*sqrt(alpha1)*cos(pi_3 + alpha3))
-                     sigma3 = sqrt(abs(Invariant1 - sigma1*sigma1-sigma2*sigma2))
-                  endif ! Invariant3=0 ?
-                endif ! tmp1
-              endif ! G diagonal ?
+                     sigma3 = sqrt(abs(Invariant1 - &
+                                       sigma1*sigma1-sigma2*sigma2))
+                  end if ! Invariant3=0 ?
+                end if ! tmp1
+              end if ! G diagonal ?
 
               ! Estimate Dsigma
               if (sigma1 .gt. 0.0_rp) then
@@ -233,7 +259,7 @@ contains
                    sigma3*(sigma1 - sigma2)*(sigma2 - sigma3)/(sigma1*sigma1)
               else
                  Dsigma = 0.0_rp
-              endif
+              end if
 
               !clipping to avoid negative values
               Dsigma = max(Dsigma, 0.0_rp)
